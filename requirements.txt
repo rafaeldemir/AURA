@@ -1,0 +1,8 @@
+transformers
+scipy
+scikit-learn
+fastapi
+uvicorn
+python-multipart
+nest_asyncio
+requests
