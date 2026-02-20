@@ -87,4 +87,4 @@ Her occasion'ın min formality, bottom tercihi, shoe tercihi var.
 - Günlük fotoğraflarda confidence bazen düşük
 
 ## Son Oturumdaki Sorun
-[BURAYA YAZ — örn: "Similarity suppression düzeltildi, şimdi X var"]
+Son oturum: OOTDiffusion kuruldu, transformers çakışması var, iki notebook çözümü deneyeceğiz
