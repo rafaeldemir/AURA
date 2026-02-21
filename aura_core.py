@@ -423,3 +423,29 @@ if __name__=="__main__":
     t=threading.Thread(target=run,daemon=True); t.start(); time.sleep(3)
     print(f"✓ API: {requests.get('http://localhost:8000/health').json()}")
 current_code = open('/content/aura/aura_core.py').read()
+additions = '''
+# ── YENİ: RENK + SKOR SİSTEMİ (session override) ─────────
+''' + inspect.getsource(color_score_pair) + '\n' + \
+    inspect.getsource(outfit_color_score) + '\n' + \
+    inspect.getsource(color_hard_ok) + '\n' + \
+    inspect.getsource(get_sunny_boost) + '\n' + \
+    inspect.getsource(formality_gap_ok) + '\n' + \
+    inspect.getsource(style_mix_ok) + '\n' + \
+    inspect.getsource(shoe_bottom_ok) + '\n' + \
+    inspect.getsource(texture_score) + '\n' + \
+    inspect.getsource(final_score) + '\n' + \
+    inspect.getsource(weighted_random_select) + '\n' + \
+    inspect.getsource(generate)
+
+import inspect
+with open('/content/aura/aura_core.py','a') as f:
+    f.write('\n\n' + additions)
+
+subprocess.run(['git','-C','/content/aura','add','.'],capture_output=True)
+r=subprocess.run(['git','-C','/content/aura','commit','-m',
+    'feat: color hard filter + sunny boost + formality gap + weighted random'],
+    capture_output=True,text=True)
+print(r.stdout or r.stderr)
+remote=f"https://{TOKEN}@github.com/{USER}/aura.git"
+r=subprocess.run(['git','-C','/content/aura','push',remote,'main'],capture_output=True,text=True)
+print(r.stdout or r.stderr or "✓ GitHub güncellendi")
