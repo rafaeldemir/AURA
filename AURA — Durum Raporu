@@ -1,0 +1,166 @@
+# AURA — Durum Raporu
+
+## Motor: %78
+
+---
+
+## NE YAPTIK
+
+### Modül 1 — Segmentation (%85)
+- SegFormer b2 ile fotoğraftan kıyafet kesimi
+- JPEG + AVIF desteği
+- Gerçek fotoğraf modu (is_real=True) — confidence threshold daha esnek
+- Ayakkabı için alt %20 kısıtı
+- clean_mask ile gürültü temizleme
+
+### Modül 2 — Feature Extraction (%90)
+- CLIP ViT-L/14 ile 512 dim embedding
+- K-means HSV renk paleti (5 renk, weight'li)
+- Outerwear detection (jacket vs tshirt)
+- Subcategory sistemi:
+  - Upper → tshirt / shirt / hoodie / knitwear
+  - Pants → formal_pants / jeans / sweatpants / shorts / chinos
+  - Shoes → formal / sneakers / boots / sandals
+  - Skirt → mini / midi / maxi
+  - Dress → casual / formal / maxi
+- Formality skoru (0.0–1.0)
+- Fabric detection
+
+### Modül 3 — Outfit Engine (%82)
+- Türkçe keyword bazlı prompt parser
+- 8 occasion sistemi (formal/sport/outdoor/school/event/event_casual/night/casual)
+- Occasion bazlı filtreler (ayakkabı, alt giysi, dış giysi, formality)
+- Sıcaklık katmanı filtresi (soğukta shorts yok, yazda outerwear yok)
+- Sabah/akşam bazlı kısıtlar (sabah sandal yok, akşam shorts yok)
+- Renk scoring (HSV analogous/complementary/clash)
+- Renk hard filter — kırmızı çizgi (0.35 altı asla)
+- Formality gap filter (0.45 üzeri fark → red)
+- Style mix filter (hoodie + mini skirt → red)
+- Shoe+bottom uyumu (sandals + shorts → red)
+- Texture balance scoring
+- Final skor: 0.6*CLIP + 0.3*renk + 0.1*texture
+- Threshold sistemi: 0.62 altı gösterme
+- Weighted random diversity (%60 top3 / %30 mid / %10 cesur)
+- Similarity suppression (item + label overlap)
+- Güneş boost (+0.06 renkli kombinlere)
+- Yetersiz dolap mesajı sistemi
+
+### Modül 4 — FastAPI (%80)
+- /wardrobe/upload — fotoğraf yükle, segment et, kaydet
+- /wardrobe/{user_id} — dolap listele
+- /outfit/generate — prompt'tan kombin üret
+- /outfit/feedback — like/dislike/worn
+
+### Modül 5 — Virtual Try-On (%35)
+- IDM-VTON HuggingFace API entegre edildi
+- Yüz blur çalışıyor (Gaussian)
+- Temel giydirme çalışıyor
+- Avatar sistemi YOK henüz
+- Poz sistemi YOK henüz
+
+### GitHub
+- Repo: private
+- aura_core.py — tüm modüller
+- START.md — yeni chat context
+- Her oturum sonunda push
+
+---
+
+## NE KALDI
+
+### Kritik (V1 için şart)
+- [ ] Boy/kilo bazlı nötr avatar sistemi
+  - Kullanıcı boy+kilo girer
+  - Vücut tipine göre avatar seçilir (ince/orta/atletik)
+  - Avatar üzerinde giydirme yapılır
+  - Gerçek fotoğraf yerine standart avatar → tutarlı sonuç
+- [ ] Çoklu poz sistemi
+  - 3-4 sabit poz şablonu (standing, casual, hands-in-pocket)
+  - Kıyafet açısı poza göre ayarlanır
+  - Kullanıcı poz seçer
+- [ ] Yüz blurlama motoru (düzgün)
+  - Şu an basit Gaussian var
+  - MediaPipe ile yüz detection + hassas blur
+  - Blur şekli değiştirilebilir (daire, dikdörtgen)
+- [ ] Işıklandırma ve gölgelendirme
+  - IDM-VTON çıktısına post-process
+  - Tutarlı ışık yönü
+  - Gölge ekleme
+- [ ] Giydirme kalite filtresi
+  - CLIP similarity: sonuç vs kıyafet
+  - SSIM: yapısal bütünlük
+  - Skor < 0.45 → gösterme
+  - Skor 0.45-0.65 → alternatif flag
+- [ ] 3.5 sn UX standardı
+  - Gerçek süre ne olursa olsun 3.5 sn'de göster
+  - Loading animasyonu
+  - Sonuç hazır olsa bile 3.5 beklenir
+- [ ] Arka plan renk seçimi
+  - Kıyafet segmentasyonundan arka plan kaldır
+  - Kullanıcı renk seçer (beyaz/gri/siyah/özel)
+  - Gardrob görünümünde de aynı arka plan
+
+### Önemli (V1 için güzel olur)
+- [ ] Sesli komut (Whisper)
+  - Mikrofon butonu → ses kaydı → Whisper STT → prompt
+  - Türkçe desteği iyi
+- [ ] Supabase Storage (Modül 5)
+  - Şu an in-memory → session kapanınca gidiyor
+  - pgvector ile embedding storage
+  - Cloudflare R2 ile görsel storage
+- [ ] Kıyafet yükleme açı kılavuzu
+  - "Kıyafeti düz zeminde bu açıdan çek" talimatı
+  - Iskelet pozu ile kıyafet açısını eşleştir
+### Sonrası (V2)
+- [ ] Feedback öğrenmesi (like/dislike → stil profili)
+- [ ] Hava durumu API otomatik entegrasyon
+- [ ] "Son 30 gün giyilmedi" filtresi
+- [ ] Frontend (React Native / Flutter)
+- [ ] Beta → kullanıcı testleri → V1 launch
+
+---
+
+## SENİN SÖYLEMEDEN EKSIK OLDUĞUN ŞEYLER
+
+1. **Kıyafet öğrenme açısı standardı yok**
+   - Kıyafetin nasıl çekileceği tanımlı değil
+   - Düz zeminde mi, askıda mı, vücutta mu?
+   - Bu segmentation kalitesini doğrudan etkiliyor
+
+2. **Gender/beden sistemi yok**
+   - Sistem şu an gender-neutral
+   - Mini skirt erkek dolabına öneriliyor olabilir
+   - Beden bilgisi olmadan "bu sana yakışır" diyemez
+
+3. **Marka/fiyat katmanı yok**
+   - Dolap analizi yapılıyor ama "bütçene uygun alternatif" yok
+   - V2 için ama erken düşünmek iyi
+
+4. **Offline çalışma yok**
+   - Tüm sistem internet bağımlı
+   - Model indirildikten sonra offline olabilir mi? Düşünülmedi
+
+5. **Privacy — kıyafet görselleri nerede duruyor?**
+   - Şu an Colab'da geçici
+   - Supabase'e gidince kim görebilir?
+   - KVKK/GDPR uyumu V1'de düşünülmeli
+
+6. **Hata mesajları Türkçe ama yetersiz**
+   - "Kıyafet bulunamadı" değil
+   - "Fotoğrafı daha iyi ışıkta, düz zeminde çekmeyi dener misin?" olmalı
+   - Kullanıcıyı azartma, yönlendir
+
+---
+
+## PLANDA ÖZETLENECEK ROADMAP
+
+```
+Şimdi     → Avatar + poz sistemi + ışıklandırma
+Sonra     → Supabase storage (kalıcı dolap)
+Sonra     → Arayüz (minimal ama şık)
+Sonra     → Beta (kendi kullanım)
+Sonra     → Bug fix + polish
+V1 Launch → Gerçek kullanıcı
+```
+
+---
