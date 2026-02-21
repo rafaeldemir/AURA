@@ -422,3 +422,4 @@ def run():
 if __name__=="__main__":
     t=threading.Thread(target=run,daemon=True); t.start(); time.sleep(3)
     print(f"✓ API: {requests.get('http://localhost:8000/health').json()}")
+current_code = open('/content/aura/aura_core.py').read()
