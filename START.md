@@ -88,3 +88,9 @@ Her occasion'ın min formality, bottom tercihi, shoe tercihi var.
 
 ## Son Oturumdaki Sorun
 Son oturum: OOTDiffusion kuruldu, transformers çakışması var, iki notebook çözümü deneyeceğiz
+Son oturum:
+- IDM-VTON HuggingFace API çalışıyor (gradio_client)
+- Giydirme test edildi, çalışıyor
+- Sonraki: boy/kilo bazlı nötr avatar + çoklu poz sistemi
+- Arka plan renk seçimi, sesli komut (Whisper) planlandı
+- 3.5sn tutarlı UX standardı kararlaştırıldı
