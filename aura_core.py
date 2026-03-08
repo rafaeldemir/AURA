@@ -422,30 +422,199 @@ def run():
 if __name__=="__main__":
     t=threading.Thread(target=run,daemon=True); t.start(); time.sleep(3)
     print(f"✓ API: {requests.get('http://localhost:8000/health').json()}")
-current_code = open('/content/aura/aura_core.py').read()
-additions = '''
-# ── YENİ: RENK + SKOR SİSTEMİ (session override) ─────────
-''' + inspect.getsource(color_score_pair) + '\n' + \
-    inspect.getsource(outfit_color_score) + '\n' + \
-    inspect.getsource(color_hard_ok) + '\n' + \
-    inspect.getsource(get_sunny_boost) + '\n' + \
-    inspect.getsource(formality_gap_ok) + '\n' + \
-    inspect.getsource(style_mix_ok) + '\n' + \
-    inspect.getsource(shoe_bottom_ok) + '\n' + \
-    inspect.getsource(texture_score) + '\n' + \
-    inspect.getsource(final_score) + '\n' + \
-    inspect.getsource(weighted_random_select) + '\n' + \
-    inspect.getsource(generate)
 
-import inspect
-with open('/content/aura/aura_core.py','a') as f:
-    f.write('\n\n' + additions)
+# ── YENİ: RENK + SKOR SİSTEMİ ────────────────────────────
 
-subprocess.run(['git','-C','/content/aura','add','.'],capture_output=True)
-r=subprocess.run(['git','-C','/content/aura','commit','-m',
-    'feat: color hard filter + sunny boost + formality gap + weighted random'],
-    capture_output=True,text=True)
-print(r.stdout or r.stderr)
-remote=f"https://{TOKEN}@github.com/{USER}/aura.git"
-r=subprocess.run(['git','-C','/content/aura','push',remote,'main'],capture_output=True,text=True)
-print(r.stdout or r.stderr or "✓ GitHub güncellendi")
+def color_score_pair(p1, p2):
+    if not p1 or not p2: return 0.75
+    d1, d2 = p1[0], p2[0]
+    if d1["s"] < 0.12 and d2["s"] < 0.12: return 1.0
+    if d1["s"] < 0.12 or d2["s"] < 0.12: return 0.95
+    dist = min(abs(d1["h"]-d2["h"]), 360-abs(d1["h"]-d2["h"]))
+    if dist <= 30:     return 1.0
+    if dist <= 60:     return 0.88
+    if 150<=dist<=210: return 0.80
+    if 60<dist<=120:   return 0.40
+    return 0.25
+
+def outfit_color_score(combo, sunny_boost=0.0):
+    ns = [f for f in combo if f["category"] != "footwear"]
+    if len(ns) < 2: return 0.8
+    scores = [color_score_pair(f1["color_palette"], f2["color_palette"])
+              for f1,f2 in itertools.combinations(ns,2)]
+    return min(1.0, round(np.mean(scores),3) + sunny_boost)
+
+def color_hard_ok(combo):
+    ns = [f for f in combo if f["category"] != "footwear"]
+    for f1,f2 in itertools.combinations(ns,2):
+        if color_score_pair(f1["color_palette"],f2["color_palette"]) < 0.35:
+            return False
+    return True
+
+def get_sunny_boost(weather):
+    if not weather: return 0.0
+    if weather.get("rain"): return 0.0
+    if weather.get("sunny") or weather.get("temp_c",20) >= 22: return 0.06
+    return 0.0
+
+def formality_gap_ok(combo):
+    fs = [f.get("formality",0.5) for f in combo if f["category"] != "footwear"]
+    if len(fs) < 2: return True
+    return max(fs) - min(fs) <= 0.45
+
+def style_mix_ok(combo):
+    tops = [f for f in combo if f["category"] in ["top","outerwear"]]
+    bottoms = [f for f in combo if f["category"] == "bottom"]
+    for t in tops:
+        for b in bottoms:
+            if t.get("subcategory") in ["hoodie","tshirt"] and "skirt" in b.get("subcategory",""):
+                return False
+    return True
+
+def shoe_bottom_ok(combo):
+    shoes = [f.get("subcategory") for f in combo if f["category"]=="footwear"]
+    bottoms = [f.get("subcategory") for f in combo if f["category"]=="bottom"]
+    if "sandals" in shoes and "shorts" in bottoms: return False
+    return True
+
+def outerwear_occasion_ok(f, disp, min_f):
+    if f["category"] != "outerwear": return True
+    if disp in ["casual","school","outdoor","event_casual"]:
+        return f.get("formality",0.5) <= 0.65
+    return True
+
+def texture_score(combo):
+    fabrics = [f.get("fabric","?") for f in combo if f["category"] != "footwear"]
+    heavy = ["wool","fleece","leather"]
+    heavy_count = sum(1 for f in fabrics if f in heavy)
+    if not fabrics: return 0.5
+    return round(1.0 - abs(heavy_count/len(fabrics) - 0.5), 3)
+
+def final_score(combo, sunny_boost=0.0):
+    cs  = clip_score(combo)
+    col = outfit_color_score(combo, sunny_boost)
+    tex = texture_score(combo)
+    return round(0.6*cs + 0.3*col + 0.1*tex, 4)
+
+def weighted_random_select(pool, top_k=3):
+    if len(pool) <= top_k: return pool
+    tier1 = pool[:3]
+    tier2 = pool[3:6] if len(pool)>3 else []
+    tier3 = pool[6:10] if len(pool)>6 else []
+    selected = []
+    attempts = 0
+    while len(selected) < top_k and attempts < 50:
+        attempts += 1
+        r = random.random()
+        if r < 0.60 and tier1: candidate = random.choice(tier1)
+        elif r < 0.90 and tier2: candidate = random.choice(tier2)
+        elif tier3: candidate = random.choice(tier3)
+        else: candidate = random.choice(pool)
+        if candidate not in selected:
+            selected.append(candidate)
+    return selected
+
+def generate(all_features, prompt, weather=None, hour=None, top_k=3):
+    ctx = parse_prompt(prompt, hour)
+    if weather is None:
+        t = {"cold":8,"mild":18,"warm":28,"rainy":14,None:20}.get(ctx["weather_hint"],20)
+        weather = {"temp_c":t,"rain":ctx["weather_hint"]=="rainy"}
+    occ=ctx["occasion"]; disp=ctx["display_occasion"]
+    tc=ctx["time_context"]
+    min_f=OCC_FORMALITY.get(disp,0.0)
+    layer=temp_layer(weather.get("temp_c",20))
+    sunny_boost=get_sunny_boost(weather)
+
+    print(f"  → {disp} | {ctx['style_hint']} | {ctx['weather_hint']} | {tc}"
+          +(" ☀+renk" if sunny_boost>0 else "")
+          +(" [bilinmeyen→casual]" if ctx["is_unknown"] else ""))
+
+    by={}
+    for f in all_features: by.setdefault(f["category"],[]).append(f)
+    def fok(f): return f.get("formality",0.5)>=min_f
+
+    ash=OCC_SHOE.get(disp)
+    fw=[f for f in by.get("footwear",[]) if
+        (not ash or f.get("subcategory") in ash) and
+        not (f.get("subcategory")=="sandals" and (layer in ["heavy","extreme"] or tc=="morning")) and
+        (fok(f) if min_f>0 else True)] or by.get("footwear",[])
+    seen_s,ufw=set(),[]
+    for f in fw:
+        s=f.get("subcategory","?")
+        if s not in seen_s: seen_s.add(s); ufw.append(f)
+    fw=ufw
+
+    bp=OCC_BOTTOM.get(disp)
+    bots=[f for f in by.get("bottom",[]) if bottom_ok(f,disp,occ,layer,tc,bp,min_f)] or by.get("bottom",[])
+    op=OCC_OUTER.get(disp); ao=by.get("outerwear",[])
+    if op is not None:
+        outer=[] if not op else ([f for f in ao if f.get("subcategory") in op] or ao)
+    else:
+        outer=[f for f in ao if fok(f) and outerwear_occasion_ok(f,disp,min_f)] if min_f>0 else               [f for f in ao if outerwear_occasion_ok(f,disp,min_f)]
+
+    tops=[f for f in by.get("top",[]) if fok(f)] if min_f>0 else by.get("top",[])
+    def fbok(f):
+        s=f.get("subcategory","?"); ok=FB_OK.get(s,["casual"])
+        return disp in ok or occ in ok
+    fb=[f for f in by.get("full_body",[]) if fbok(f)]
+
+    cands,seen=[],set()
+    def add(combo):
+        k=frozenset(f["item_id"] for f in combo)
+        if k not in seen: seen.add(k); cands.append(combo)
+
+    for shoe in (fw or [None]):
+        sl=[shoe] if shoe else []
+        for t,b in itertools.product(tops,bots): add([t,b]+sl)
+        for o,t,b in itertools.product(outer,tops,bots):
+            if o.get("subcategory")==t.get("subcategory"): continue
+            add([o,t,b]+sl)
+        for f in fb: add([f]+sl)
+
+    valid=[]
+    for combo in cands:
+        if not outfit_complete([f["category"] for f in combo]): continue
+        if not ctx_filter(combo,weather,occ,tc): continue
+        if not formality_gap_ok(combo): continue
+        if not style_mix_ok(combo): continue
+        if not shoe_bottom_ok(combo): continue
+        if not color_hard_ok(combo): continue
+        cs=clip_score(combo)
+        if cs<0.18: continue
+        sc=final_score(combo,sunny_boost)
+        if sc<0.62: continue
+        valid.append({
+            "items":[f["item_id"] for f in combo],
+            "labels":[f.get("subcategory",f["label"]) for f in combo],
+            "categories":[f["category"] for f in combo],
+            "fabrics":[f.get("fabric","?") for f in combo],
+            "formality":[f.get("formality",0.5) for f in combo],
+            "final_score":sc,"context":ctx,
+        })
+
+    if not valid:
+        msgs={"formal":"Formal kıyafet yetersiz. Gömlek veya kumaş pantolon ekle.",
+              "event":"Özel etkinlik için yeterli parça yok.",
+              "night":"Gece için yeterli parça bulunamadı."}
+        return [{"items":[],"labels":[],"categories":[],"fabrics":[],"formality":[],
+                 "final_score":0,"style_axis":"","message":msgs.get(disp,"Uyumlu kombin bulunamadı."),"context":ctx}]
+
+    valid.sort(key=lambda x:x["final_score"],reverse=True)
+    pool=valid[:10]
+    top_score=pool[0]["final_score"]
+    show_k=top_k if top_score>=0.80 else (min(2,top_k) if top_score>=0.70 else 1)
+
+    if disp in ["sport","formal","event"]:
+        selected=pool[:show_k]
+    else:
+        selected=weighted_random_select(pool,top_k=show_k)
+
+    final_selected=[]
+    for c in selected:
+        ci=set(c["items"]); cl=set(c["labels"])
+        if not any(len(ci&set(s["items"]))/len(ci|set(s["items"]))>0.5 or
+                   len(cl&set(s["labels"]))/len(cl|set(s["labels"]))>0.75
+                   for s in final_selected):
+            c["style_axis"]=style_axis(c)
+            final_selected.append(c)
+    return final_selected
