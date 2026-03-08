@@ -94,3 +94,11 @@ Son oturum:
 - Sonraki: boy/kilo bazlı nötr avatar + çoklu poz sistemi
 - Arka plan renk seçimi, sesli komut (Whisper) planlandı
 - 3.5sn tutarlı UX standardı kararlaştırıldı
+
+## KALDIK YER — EN SON
+- aura_core.py stabil, tüm fonksiyonlar kayıtlı
+- avatar_renderer.py GitHub'da var, 24 avatar var
+- IDM-VTON HuggingFace API çalışıyor
+- Ten rengi Reinhard Color Transfer ile düzelteceğiz
+- Sıradaki: avatar render test → ten rengi fix → IDM-VTON entegrasyon
+- Repo: https://github.com/rafaeldemir/AURA
