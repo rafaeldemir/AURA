@@ -618,3 +618,63 @@ def generate(all_features, prompt, weather=None, hour=None, top_k=3):
             c["style_axis"]=style_axis(c)
             final_selected.append(c)
     return final_selected
+
+# ── SUPABASE ──────────────────────────────────────────────
+from supabase import create_client
+
+SUPABASE_URL = "https://xzobaigtiueobqkielnn.supabase.co"
+SUPABASE_KEY = "eyJhbGc..."  # anon key
+
+supabase = create_client(SUPABASE_URL, SUPABASE_KEY)
+
+def create_user(gender="male", skin_tone="medium", avatar_key="avatar_m_medium"):
+    result = supabase.table("users").insert({
+        "gender": gender, "skin_tone": skin_tone, "avatar_key": avatar_key
+    }).execute()
+    return result.data[0]["id"]
+
+def save_wardrobe_item(user_id, feature_dict, seg_image_path=None):
+    import os
+    seg_url = None
+    if seg_image_path and os.path.exists(seg_image_path):
+        filename = f"{user_id}/{os.path.basename(seg_image_path)}"
+        with open(seg_image_path, "rb") as f:
+            supabase.storage.from_("wardrobe").upload(filename, f)
+        seg_url = supabase.storage.from_("wardrobe").get_public_url(filename)
+    item = {
+        "user_id": user_id,
+        "category": feature_dict.get("category"),
+        "subcategory": feature_dict.get("subcategory"),
+        "fabric": feature_dict.get("fabric"),
+        "formality": feature_dict.get("formality"),
+        "confidence": feature_dict.get("confidence"),
+        "color_palette": feature_dict.get("color_palette"),
+        "seg_image_url": seg_url,
+    }
+    result = supabase.table("wardrobe_items").insert(item).execute()
+    return result.data[0]["id"]
+
+def load_wardrobe(user_id):
+    result = supabase.table("wardrobe_items").select("*").eq("user_id", user_id).execute()
+    return result.data
+
+def init_user_session(user_id):
+    items = load_wardrobe(user_id)
+    wardrobe = []
+    for item in items:
+        feat = {
+            "item_id": item["id"],
+            "category": item["category"],
+            "subcategory": item["subcategory"],
+            "fabric": item["fabric"],
+            "formality": item["formality"] or 0.5,
+            "confidence": item["confidence"] or 0.8,
+            "color_palette": item["color_palette"] or [],
+            "clip_embedding": [],
+            "seg_path": None,
+            "label": item["subcategory"]
+        }
+        wardrobe.append(feat)
+    WARDROBE_STORE[user_id] = wardrobe
+    print(f"✓ Session başlatıldı — {len(wardrobe)} kıyafet yüklendi")
+    return wardrobe
