@@ -1,104 +1,81 @@
 # AURA — Yeni Chat Context
 
 ## Ne yapıyoruz
-Türkçe prompt'la kıyafet kombin öneren uygulama. Kullanıcı dolabını fotoğrafla yükler, "yarın iş toplantım var" yazar, sistem 3 kombin önerir.
+Türkçe prompt'la kıyafet kombin öneren mobil uygulama.
+Kullanıcı dolabını fotoğrafla yükler → "yarın iş toplantım var" yazar → sistem 3 kombin önerir → avatar üzerinde giydirme gösterir.
 
 ## GitHub
-https://github.com/rafaeldemir/AURA ← bunu güncelle
+https://github.com/rafaeldemir/AURA (private)
 
 ## Tech Stack
 - Segmentation: SegFormer b2 (mattmdjaga/segformer_b2_clothes)
 - Embedding: CLIP ViT-L/14
 - Backend: FastAPI + Uvicorn
+- Storage: Supabase (PostgreSQL + Storage) ✓ ÇALIŞIYOR
+- Giydirme: IDM-VTON HuggingFace API
 - Ortam: Google Colab Pro+ (A100/H100)
-- Storage: Şu an in-memory (Supabase V2'de)
-
-## Mevcut Durum
-```
-Modül 1 — Segmentation       %85 ✓
-Modül 2 — Feature Extraction  %90 ✓
-Modül 3 — Outfit Engine       %80 ✓
-Modül 4 — FastAPI             %80 ✓
-Modül 5 — Storage             %0  ← sıradaki
-Frontend                      %0  ← sıradaki
-```
+- Frontend: React Native (henüz başlanmadı)
 
 ## Nasıl Başlatılır (Colab)
-```python
-!git clone https://TOKEN@github.com/KULLANICI/aura.git
-!pip install -q git+https://github.com/openai/CLIP.git transformers scipy scikit-learn fastapi uvicorn python-multipart nest_asyncio
+TOKEN = "tokenin"
+USER  = "rafaeldemir"
+!git clone https://{TOKEN}@github.com/{USER}/AURA.git /content/aura 2>/dev/null || git -C /content/aura pull
+!pip install -q git+https://github.com/openai/CLIP.git transformers scipy scikit-learn fastapi uvicorn python-multipart nest_asyncio supabase
 import threading
-exec(open('aura/aura_core.py').read())
-t=threading.Thread(target=run,daemon=True); t.start()
-```
+exec(open('/content/aura/aura_core.py').read())
+t = threading.Thread(target=run, daemon=True)
+t.start()
 
-## Fotoğraf Yükleme (Colab)
-```python
-from google.colab import files as colab_files
-import requests, shutil
+## Mevcut Durum
+Modül 1 — Segmentation          %85 ✓
+Modül 2 — Feature Extraction     %90 ✓
+Modül 3 — Outfit Engine          %82 ✓
+Modül 4 — FastAPI                %80 ✓
+Modül 5 — Supabase Storage       %70 ✓ (çalışıyor, CLIP embedding eksik)
+Modül 6 — Avatar Sistemi         %80 ✓ (10 avatar hazır, render çalışıyor)
+Modül 7 — IDM-VTON Giydirme     %25 ✗ (API çalışıyor, avatar entegrasyonu yok)
+Modül 8 — Ten Rengi Tespiti      %0  ✗
+Frontend (React Native)          %0  ✗
+Genel: %65
 
-WARDROBE_STORE["test_user"] = []
-uploaded = colab_files.upload()
+## Supabase Bilgileri
+- URL: https://xzobaigtiueobqkielnn.supabase.co
+- Tablolar: users, wardrobe_items, outfit_feedback
+- Storage bucket: wardrobe (public)
+- Test user_id: da913b18-8cd8-4b43-aba4-256b870b353d
+- RLS: storage.objects için allow_all policy var
 
-for filename, data in uploaded.items():
-    path = f"/content/{filename}"
-    with open(path,'wb') as f: f.write(data)
-    is_real = not any(x in filename.lower() for x in ["-p.jpg","alternate",".avif"])
-    with open(path,'rb') as f:
-        r = requests.post("http://localhost:8000/wardrobe/upload",
-            params={"user_id":"test_user","real_photo":is_real},
-            files={"file":(filename,f,"image/jpeg")})
-    result = r.json()
-    print(f"\n{filename}:")
-    for item in result.get("processed",[]): print(f"  ✓ [{item['category']}] {item['subcategory']} — {item['fabric']}")
-    for retry in result.get("retry_needed",[]): print(f"  ↺ {retry['message']}")
-```
+## Avatar Sistemi
+- 10 avatar: avatar_m/f_fair/light/medium/brown/dark.png
+- Klasör: /content/aura/avatars/
+- Erkek: atlet + şort, Kadın: sports bra + şort
+- Yüz blurlu, beyaz arka plan
+- avatar_renderer.py ile render ediliyor
 
-## Prompt Test
-```python
-items = WARDROBE_STORE.get("test_user", [])
-for prompt in ["yarın iş toplantım var", "konsere gidiyorum", "spor yapmaya gidiyorum"]:
-    print(f"\nPrompt: '{prompt}'")
-    outfits = generate(items, prompt, current_hour=10)
-    for i,o in enumerate(outfits):
-        if o.get("message"): print(f"  ⚠ {o['message']}"); break
-        print(f"  Outfit {i+1} [{o['style_axis']}] — {o['final_score']}")
-        for l,c,f in zip(o["labels"],o["categories"],o["fabrics"]): print(f"    · [{c}] {l} — {f}")
-```
+## IDM-VTON
+- HuggingFace Space API ile çalışıyor (gradio_client)
+- Avatar üzerine giydirme henüz entegre değil
 
-## Sistem Nasıl Çalışır
-1. Fotoğraf → SegFormer ile kıyafet kesimi
-2. Her item için CLIP ile subcategory tespiti (tshirt/shirt/hoodie/knitwear vb)
-3. Her item'a formality skoru atanır (0.0-1.0)
-4. Prompt → Türkçe keyword matching → occasion (formal/sport/casual vb)
-5. Occasion bazlı filtreler uygulanır (ayakkabı, alt giysi, dış giysi)
-6. Hava + saat bazlı filtreler (sabah shorts yok, soğukta sandal yok)
-7. Renk uyumu (HSV clash detection)
-8. CLIP cosine similarity (%65) + formality uyumu (%35) → skor
-9. Similarity suppression ile 3 farklı vibe seçilir
+## Outfit Engine
+- 8 occasion sistemi (formal/sport/outdoor/school/event/event_casual/night/casual)
+- Türkçe keyword parsing
+- Renk scoring, formality gap filter, weighted random diversity
+- Similarity suppression, güneş boost
 
-## Occasion Sistemi
-formal / sport / outdoor / school / event / event_casual / night / casual
-Her occasion'ın min formality, bottom tercihi, shoe tercihi var.
+## Onboarding Felsefesi
+- Selfie → ten rengi otomatik tespit → en yakın avatar seç
+- 5 kıyafet yükle → ilk kombin → WOW anı
+- Hava durumu izni SONRA iste
+- 10 dakikadan kısa onboarding hedefi
 
-## Bilinen Açık Sorunlar
-- Formal dolap yetersizse tek outfit geliyor (V1 için normal)
-- Modül 5 (Supabase) henüz yok — session kapanınca dolap sıfırlanıyor
-- Günlük fotoğraflarda confidence bazen düşük
+## Sıradaki Adımlar
+1. CLIP embedding pgvector
+2. Gerçek kıyafet tam pipeline test
+3. Ten rengi tespiti (selfie oval maske)
+4. IDM-VTON + avatar entegrasyonu
+5. React Native başlangıç
 
-## Son Oturumdaki Sorun
-Son oturum: OOTDiffusion kuruldu, transformers çakışması var, iki notebook çözümü deneyeceğiz
-Son oturum:
-- IDM-VTON HuggingFace API çalışıyor (gradio_client)
-- Giydirme test edildi, çalışıyor
-- Sonraki: boy/kilo bazlı nötr avatar + çoklu poz sistemi
-- Arka plan renk seçimi, sesli komut (Whisper) planlandı
-- 3.5sn tutarlı UX standardı kararlaştırıldı
-
-## KALDIK YER — EN SON
-- aura_core.py stabil, tüm fonksiyonlar kayıtlı
-- avatar_renderer.py GitHub'da var, 24 avatar var
-- IDM-VTON HuggingFace API çalışıyor
-- Ten rengi Reinhard Color Transfer ile düzelteceğiz
-- Sıradaki: avatar render test → ten rengi fix → IDM-VTON entegrasyon
-- Repo: https://github.com/rafaeldemir/AURA
+## Son Oturum
+- Supabase kuruldu, tablolar oluşturuldu
+- Storage bucket çalışıyor, görsel yükleme OK
+- Session kapatıp açınca veri Supabase'den geliyor ✓
