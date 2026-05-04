@@ -802,3 +802,117 @@ def segment_clothing_hybrid(image_path, is_real=True):
             "fill_ratio": round(fill_ratio, 2),
         }
     return results, rejected, seg_map
+
+# ── SESSION 2: CLIP EMBEDDING + MOOD BIAS ──
+import io, uuid, json
+
+def clip_embed(pil_image):
+    """PIL → 768-dim L2-normalize embedding (list[float])"""
+    img = pil_image.convert("RGB") if pil_image.mode != "RGB" else pil_image
+    with torch.no_grad():
+        x = clip_preprocess(img).unsqueeze(0).cuda()
+        emb = clip_model.encode_image(x)
+        emb = emb / emb.norm(dim=-1, keepdim=True)
+    return emb.squeeze().cpu().numpy().astype(float).tolist()
+
+
+def save_wardrobe_item_v2(user_id, feature_dict, seg_rgba_pil):
+    """Segmente kıyafet + CLIP embedding → Supabase"""
+    item_id = str(uuid.uuid4())
+    buf = io.BytesIO()
+    seg_rgba_pil.save(buf, format="PNG", compress_level=0)
+    buf.seek(0)
+    path = f"{user_id}/{item_id}_seg.png"
+    supabase.storage.from_("wardrobe").upload(
+        path, buf.getvalue(),
+        {"content-type": "image/png", "x-upsert": "true"})
+    seg_url = supabase.storage.from_("wardrobe").get_public_url(path)
+    embedding = feature_dict.get("clip_embedding") or clip_embed(seg_rgba_pil)
+    item = {
+        "id": item_id, "user_id": user_id,
+        "category": feature_dict.get("category"),
+        "subcategory": feature_dict.get("subcategory"),
+        "fabric": feature_dict.get("fabric"),
+        "formality": feature_dict.get("formality"),
+        "confidence": feature_dict.get("confidence"),
+        "color_palette": feature_dict.get("color_palette"),
+        "seg_image_url": seg_url,
+        "clip_embedding": embedding,
+    }
+    supabase.table("wardrobe_items").insert(item).execute()
+    return item_id
+
+
+def load_wardrobe_v2(user_id):
+    res = supabase.table("wardrobe_items").select("*").eq("user_id", user_id).execute()
+    wardrobe = []
+    for item in res.data:
+        emb = item.get("clip_embedding")
+        if isinstance(emb, str):
+            try: emb = json.loads(emb)
+            except: emb = []
+        elif emb is None: emb = []
+        wardrobe.append({
+            "item_id": item["id"], "category": item["category"],
+            "subcategory": item["subcategory"], "fabric": item["fabric"],
+            "formality": item.get("formality") or 0.5,
+            "confidence": item.get("confidence") or 0.8,
+            "color_palette": item.get("color_palette") or [],
+            "clip_embedding": emb,
+            "seg_path": item.get("seg_image_url"),
+            "label": item["subcategory"],
+        })
+    return wardrobe
+
+
+# ── MOOD + EVENT (V1 — sade, soft bias) ──
+MOOD_LIST = ["rahat", "şık", "enerjik", "yorgun", "minimal", "cesur"]
+EVENT_LIST = ["okul", "iş", "buluşma", "spor", "akşam", "evde"]
+
+# Event = ANA FİLTRE: minimum formality eşiği
+EVENT_FORMALITY = {
+    "okul": 0.20, "iş": 0.55, "buluşma": 0.30,
+    "spor": 0.10, "akşam": 0.40, "evde": 0.0,
+}
+
+# Mood = SOFT BIAS: skoru hafifçe eğer, kıyafet elemez
+MOOD_BIAS = {
+    "rahat":   {"formality": -0.12, "saturation": 0.0,   "clash_tol": 0.0},
+    "şık":     {"formality": +0.18, "saturation": -0.05, "clash_tol": -0.05},
+    "enerjik": {"formality": -0.05, "saturation": +0.12, "clash_tol": +0.03},
+    "yorgun":  {"formality": -0.10, "saturation": -0.08, "clash_tol": 0.0},
+    "minimal": {"formality":  0.0,  "saturation": -0.15, "clash_tol": -0.05},
+    "cesur":   {"formality":  0.0,  "saturation": +0.10, "clash_tol": +0.10},
+}
+
+
+def apply_mood_score(score, combo, mood):
+    """Mood'a göre skoru ±0.20 aralığında eğer. Hard filter YOK."""
+    bias = MOOD_BIAS.get(mood, {})
+    if not bias: return score
+    avg_form = float(np.mean([f.get("formality", 0.5) for f in combo]))
+    score += bias.get("formality", 0) * (avg_form - 0.5) * 2
+    sats = [p.get("s", 0.3) for f in combo for p in (f.get("color_palette") or [])]
+    if sats:
+        avg_sat = float(np.mean(sats))
+        score += bias.get("saturation", 0) * (avg_sat - 0.4) * 2
+    return round(score, 4)
+
+
+def apply_weather_score(score, combo, weather):
+    """Hava davranış bias'ı — gerçek psikoloji. Soft."""
+    if not weather: return score
+    temp = weather.get("temp_c", 20)
+    sunny = weather.get("sunny", False)
+    rainy = weather.get("rain", False)
+    sats = [p.get("s", 0.3) for f in combo for p in (f.get("color_palette") or [])]
+    vals = [p.get("v", 0.5) for f in combo for p in (f.get("color_palette") or [])]
+    avg_sat = float(np.mean(sats)) if sats else 0.3
+    avg_val = float(np.mean(vals)) if vals else 0.5
+    if sunny and temp >= 20:
+        score += 0.08 * (avg_sat - 0.4) * 2
+    elif temp < 10:
+        score += 0.05 * (0.4 - avg_sat) * 2
+    if rainy:
+        score += 0.05 * (0.5 - avg_val) * 2
+    return round(score, 4)
