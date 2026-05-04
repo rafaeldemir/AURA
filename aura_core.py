@@ -678,3 +678,127 @@ def init_user_session(user_id):
     WARDROBE_STORE[user_id] = wardrobe
     print(f"✓ Session başlatıldı — {len(wardrobe)} kıyafet yüklendi")
     return wardrobe
+
+EXPECTED_ASPECT = {
+    "Upper-clothes": (0.7, 1.6), "Pants": (1.4, 3.5),
+    "Skirt": (0.8, 2.0), "Dress": (1.5, 3.5),
+    "Left-shoe": (0.4, 1.2), "Right-shoe": (0.4, 1.2),
+}
+MIN_AREA_RATIO = {
+    "Upper-clothes": 0.04, "Pants": 0.04, "Skirt": 0.03,
+    "Dress": 0.05, "Left-shoe": 0.005, "Right-shoe": 0.005,
+}
+EXCLUDE_LABELS = {1, 2, 3, 11, 14, 15, 16, 17}
+
+def grabcut_refine(img_np, mask, bbox, pad=30):
+    import cv2
+    h, w = img_np.shape[:2]
+    rmin, rmax, cmin, cmax = bbox
+    gc = np.full(mask.shape, cv2.GC_PR_BGD, dtype=np.uint8)
+    gc[mask] = cv2.GC_PR_FGD
+    gc[ndimage.binary_erosion(mask, iterations=8)] = cv2.GC_FGD
+    bg = np.ones(mask.shape, dtype=bool)
+    bg[max(0,rmin-pad):min(h,rmax+pad), max(0,cmin-pad):min(w,cmax+pad)] = False
+    gc[bg] = cv2.GC_BGD
+    try:
+        cv2.grabCut(img_np, gc, None, np.zeros((1,65),np.float64),
+                    np.zeros((1,65),np.float64), 5, cv2.GC_INIT_WITH_MASK)
+        return ((gc == cv2.GC_FGD) | (gc == cv2.GC_PR_FGD))
+    except:
+        return mask
+
+def segment_clothing_hybrid(image_path, is_real=True):
+    import cv2
+    from PIL import ImageOps
+    img = Image.open(image_path).convert("RGB")
+    img = ImageOps.exif_transpose(img)
+    w, h = img.size
+    if max(w, h) > 1024:
+        r = 1024 / max(w, h)
+        img = img.resize((int(w*r), int(h*r)), Image.LANCZOS)
+    img_np = np.array(img)
+    H, W = img_np.shape[:2]
+    img_area = H * W
+
+    inputs = seg_processor(images=img, return_tensors="pt").to("cuda")
+    with torch.no_grad():
+        outputs = seg_model(**inputs)
+    seg = F.interpolate(outputs.logits, size=(H, W), mode="bilinear", align_corners=False)
+    seg_map = seg.argmax(dim=1).squeeze().cpu().numpy()
+
+    exclusion = np.isin(seg_map, list(EXCLUDE_LABELS))
+    sam_predictor.set_image(img_np)
+    results, rejected = {}, {}
+
+    for lid, lname in CLOTHING_LABELS.items():
+        rough = (seg_map == lid)
+        if rough.sum() / img_area < MIN_AREA_RATIO.get(lname, 0.01):
+            if rough.sum() > 100: rejected[lname] = "too_small"
+            continue
+        if lid in [9, 10]:
+            s = int(H * 0.75)
+            nm = np.zeros_like(rough); nm[s:,:] = rough[s:,:]
+            rough = nm
+            if rough.sum() < 100: continue
+        rows = np.any(rough, axis=1); cols = np.any(rough, axis=0)
+        if not rows.any(): continue
+        rmin, rmax = np.where(rows)[0][[0,-1]]
+        cmin, cmax = np.where(cols)[0][[0,-1]]
+        bh, bw = rmax-rmin, cmax-cmin
+        if bw > 0 and lname in EXPECTED_ASPECT:
+            aspect = bh / bw
+            mn, mx = EXPECTED_ASPECT[lname]
+            if aspect < mn*0.6 or aspect > mx*1.5:
+                rejected[lname] = "wrong_shape"; continue
+        et = sum([rmin<=5, rmax>=H-5, cmin<=5, cmax>=W-5])
+        if (et >= 2 and lname not in ["Pants","Dress"]) or et >= 3:
+            rejected[lname] = "edge_cut"; continue
+        try:
+            masks, scores, _ = sam_predictor.predict(
+                box=np.array([cmin, rmin, cmax, rmax]),
+                multimask_output=True)
+            best = int(np.argmax(scores))
+            mask = masks[best].astype(bool)
+            sam_score = float(scores[best])
+        except:
+            mask = rough; sam_score = 0.0
+        method = "sam" if sam_score >= 0.6 else "segformer"
+        if method == "segformer": mask = rough
+        mask = mask & ~exclusion
+        mask = ndimage.binary_fill_holes(mask)
+        if method == "sam" and mask.sum() > 500:
+            r2 = np.any(mask, axis=1); c2 = np.any(mask, axis=0)
+            if r2.any():
+                rm2, rmx2 = np.where(r2)[0][[0,-1]]
+                cm2, cmx2 = np.where(c2)[0][[0,-1]]
+                mask = grabcut_refine(img_np, mask, (rm2, rmx2, cm2, cmx2))
+                mask = ndimage.binary_fill_holes(mask)
+        labeled, n = ndimage.label(mask)
+        if n > 1:
+            sizes = ndimage.sum(mask, labeled, range(1, n+1))
+            mask = labeled == (int(np.argmax(sizes)) + 1)
+        mask = ndimage.binary_closing(mask, iterations=3)
+        mask = ndimage.binary_fill_holes(mask)
+        if mask.sum() < 200:
+            rejected[lname] = "fragmented"; continue
+        rows = np.any(mask, axis=1); cols = np.any(mask, axis=0)
+        rmin, rmax = np.where(rows)[0][[0,-1]]
+        cmin, cmax = np.where(cols)[0][[0,-1]]
+        bbox_area = (rmax-rmin) * (cmax-cmin)
+        fill_ratio = mask.sum() / bbox_area if bbox_area > 0 else 0
+        if fill_ratio < 0.30:
+            rejected[lname] = "too_sparse"; continue
+        confidence = round(sam_score * (0.6 + fill_ratio*0.4), 2) if method=="sam" else 0.65
+        if confidence < 0.55:
+            rejected[lname] = f"low_conf_{confidence}"; continue
+        alpha = cv2.GaussianBlur((mask*255).astype(np.uint8), (3,3), 0.8)
+        rgba = np.zeros((H, W, 4), dtype=np.uint8)
+        rgba[:,:,:3] = img_np; rgba[:,:,3] = alpha
+        p = 15
+        crop = rgba[max(0,rmin-p):min(H,rmax+p), max(0,cmin-p):min(W,cmax+p)]
+        results[lname] = {
+            "image": Image.fromarray(crop),
+            "confidence": confidence, "method": method,
+            "fill_ratio": round(fill_ratio, 2),
+        }
+    return results, rejected, seg_map
