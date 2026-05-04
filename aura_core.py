@@ -1030,3 +1030,51 @@ def generate_v2(all_features, mood=None, event="evde", weather=None, hour=None, 
         if len(selected) >= top_k: break
         if o not in selected: o["style_axis"] = style_axis(o); selected.append(o)
     return selected
+
+# ── SESSION 2 (final): TEN RENGİ + AVATAR ──
+def detect_skin_tone(selfie_path):
+    """Selfie → fair | light | medium | brown | dark"""
+    import cv2, mediapipe as mp
+    img = cv2.imread(selfie_path)
+    if img is None: return "medium"
+    mp_face = mp.solutions.face_detection
+    with mp_face.FaceDetection(min_detection_confidence=0.5) as fd:
+        res = fd.process(cv2.cvtColor(img, cv2.COLOR_BGR2RGB))
+    if not res.detections: return "medium"
+    bb = res.detections[0].location_data.relative_bounding_box
+    h, w = img.shape[:2]
+    x = max(0, int(bb.xmin*w)); y = max(0, int(bb.ymin*h))
+    fw = int(bb.width*w); fh = int(bb.height*h)
+    if fw < 50 or fh < 50: return "medium"
+    face = img[y:y+fh, x:x+fw]
+    cheek = face[int(fh*0.55):int(fh*0.78), int(fw*0.15):int(fw*0.85)]
+    if cheek.size == 0: return "medium"
+    ycrcb = cv2.cvtColor(cheek, cv2.COLOR_BGR2YCrCb)
+    skin = cv2.inRange(ycrcb, np.array([0,133,77]), np.array([255,173,127]))
+    if (skin > 0).sum() < 100: return "medium"
+    y_ch = ycrcb[:,:,0]
+    avg = float(np.mean(y_ch[skin > 0]))
+    if avg > 200: return "fair"
+    if avg > 170: return "light"
+    if avg > 130: return "medium"
+    if avg > 95:  return "brown"
+    return "dark"
+
+
+def select_avatar_for_user(gender, skin_tone):
+    """gender + skin_tone → avatar dosya adı"""
+    prefix = "avatar_m" if gender == "male" else "avatar_f"
+    valid = {"fair","light","medium","brown","dark"}
+    tone = skin_tone if skin_tone in valid else "medium"
+    return f"{prefix}_{tone}.png"
+
+
+def setup_user_profile(user_id, gender, selfie_path=None):
+    """Kullanıcı kaydı: ten rengi tespit + avatar ata + DB güncelle"""
+    tone = detect_skin_tone(selfie_path) if selfie_path else "medium"
+    avatar_key = select_avatar_for_user(gender, tone)
+    supabase.table("users").update({
+        "gender": gender, "skin_tone": tone, "avatar_key": avatar_key
+    }).eq("id", user_id).execute()
+    print(f"  ✓ {gender} | {tone} | {avatar_key}")
+    return {"gender": gender, "skin_tone": tone, "avatar_key": avatar_key}
