@@ -944,7 +944,7 @@ def generate_v2(all_features, mood=None, event="evde", weather=None, hour=None, 
     occ = ctx["occasion"]; disp = ctx["display_occasion"]; tc = ctx["time_context"]
     min_f = OCC_FORMALITY.get(disp, 0.0); layer = temp_layer(weather.get("temp_c", 20))
 
-    print(f"  → {disp} | mood: {mood} | {weather.get(\"temp_c\")}°C | {tc}")
+    print(f"  → {disp} | mood: {mood} | {weather.get('temp_c')}°C | {tc}")
 
     by = {}
     for f in all_features: by.setdefault(f["category"], []).append(f)
