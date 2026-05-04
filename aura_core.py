@@ -916,3 +916,117 @@ def apply_weather_score(score, combo, weather):
     if rainy:
         score += 0.05 * (0.5 - avg_val) * 2
     return round(score, 4)
+
+# ── SESSION 2: GENERATE V2 (mood + event tabanlı, soft bias) ──
+EVENT_TO_OCCASION = {
+    "okul": "casual", "iş": "formal", "buluşma": "casual",
+    "spor": "sport", "akşam": "night", "evde": "casual",
+}
+
+
+def parse_mood_event(mood, event, hour=None):
+    occ = EVENT_TO_OCCASION.get(event, "casual")
+    disp = occ
+    fallback = OCC_FALLBACK.get(occ, occ)
+    return {
+        "occasion": fallback, "display_occasion": disp,
+        "mood": mood, "event": event,
+        "weather_hint": None, "time_context": time_ctx(hour),
+        "is_unknown": False, "style_hint": mood or "",
+    }
+
+
+def generate_v2(all_features, mood=None, event="evde", weather=None, hour=None, top_k=3):
+    """Event = ana filtre, weather = güvenlik filtresi, mood = soft score bias."""
+    ctx = parse_mood_event(mood, event, hour)
+    if weather is None:
+        weather = {"temp_c": 20, "rain": False, "sunny": False}
+    occ = ctx["occasion"]; disp = ctx["display_occasion"]; tc = ctx["time_context"]
+    min_f = OCC_FORMALITY.get(disp, 0.0); layer = temp_layer(weather.get("temp_c", 20))
+
+    print(f"  → {disp} | mood: {mood} | {weather.get(\"temp_c\")}°C | {tc}")
+
+    by = {}
+    for f in all_features: by.setdefault(f["category"], []).append(f)
+    def fok(f): return f.get("formality", 0.5) >= min_f
+
+    ash = OCC_SHOE.get(disp)
+    fw = [f for f in by.get("footwear", []) if
+          (not ash or f.get("subcategory") in ash) and
+          not (f.get("subcategory") == "sandals" and (layer in ["heavy", "extreme"] or tc == "morning")) and
+          (fok(f) if min_f > 0 else True)] or by.get("footwear", [])
+    seen_s, ufw = set(), []
+    for f in fw:
+        s = f.get("subcategory", "?")
+        if s not in seen_s: seen_s.add(s); ufw.append(f)
+    fw = ufw
+
+    bp = OCC_BOTTOM.get(disp)
+    bots = [f for f in by.get("bottom", []) if bottom_ok(f, disp, occ, layer, tc, bp, min_f)] or by.get("bottom", [])
+
+    op = OCC_OUTER.get(disp); ao = by.get("outerwear", [])
+    if op is not None:
+        outer = [] if not op else ([f for f in ao if f.get("subcategory") in op] or ao)
+    else:
+        outer = [f for f in ao if fok(f)] if min_f > 0 else ao
+
+    tops = [f for f in by.get("top", []) if fok(f)] if min_f > 0 else by.get("top", [])
+
+    def fbok(f):
+        s = f.get("subcategory", "?"); ok = FB_OK.get(s, ["casual"])
+        return disp in ok or occ in ok
+    fb = [f for f in by.get("full_body", []) if fbok(f)]
+
+    cands, seen = [], set()
+    def add(combo):
+        k = frozenset(f["item_id"] for f in combo)
+        if k not in seen: seen.add(k); cands.append(combo)
+
+    for shoe in (fw or [None]):
+        sl = [shoe] if shoe else []
+        for t, b in itertools.product(tops, bots): add([t, b] + sl)
+        for o, t, b in itertools.product(outer, tops, bots):
+            if o.get("subcategory") == t.get("subcategory"): continue
+            add([o, t, b] + sl)
+        for f in fb: add([f] + sl)
+
+    valid = []
+    for combo in cands:
+        if not outfit_complete([f["category"] for f in combo]): continue
+        if not ctx_filter(combo, weather, occ, tc): continue
+        ns = [f for f in combo if f["category"] != "footwear"]
+        if not all(color_ok(f1["color_palette"], f2["color_palette"])[0]
+                   for f1, f2 in itertools.combinations(ns, 2)): continue
+        cs = clip_score(combo); fs = formality_score(combo)
+        base = round(cs*0.65 + fs*0.35, 4)
+        biased = apply_mood_score(base, combo, mood)        # ★ mood
+        biased = apply_weather_score(biased, combo, weather) # ★ weather
+        valid.append({
+            "items": [f["item_id"] for f in combo],
+            "labels": [f.get("subcategory", f["label"]) for f in combo],
+            "categories": [f["category"] for f in combo],
+            "fabrics": [f.get("fabric", "?") for f in combo],
+            "formality": [f.get("formality", 0.5) for f in combo],
+            "final_score": biased, "context": ctx,
+        })
+
+    if not valid:
+        msgs = {"formal": "Formal kıyafet yetersiz.",
+                "night": "Gece için yeterli parça bulunamadı."}
+        return [{"items": [], "labels": [], "categories": [], "fabrics": [],
+                 "formality": [], "final_score": 0, "style_axis": "",
+                 "message": msgs.get(disp, "Bu his/event için uygun kombin bulunamadı."),
+                 "context": ctx}]
+
+    valid.sort(key=lambda x: x["final_score"], reverse=True)
+    pool = valid[:25]; selected = []
+    for c in pool:
+        if len(selected) >= top_k: break
+        ci = set(c["items"]); cl = set(c["labels"])
+        if not any(len(ci & set(s["items"]))/len(ci | set(s["items"])) > 0.5 or
+                   len(cl & set(s["labels"]))/len(cl | set(s["labels"])) > 0.75 for s in selected):
+            c["style_axis"] = style_axis(c); selected.append(c)
+    for o in pool:
+        if len(selected) >= top_k: break
+        if o not in selected: o["style_axis"] = style_axis(o); selected.append(o)
+    return selected
